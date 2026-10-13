@@ -398,10 +398,13 @@ Implemented even though this is Devnet:
 - No real authentication: `DemoUserMiddleware` trusts every request as `demo-user-001`. Do not
   expose this prototype publicly.
 - No rate limiting on the API; the public Devnet RPC is itself rate limited.
-- `npm audit` reports moderate advisories in transitive dependencies of `@solana/web3.js` 1.x
-  (`jayson` → `uuid`, `stream-json`). They affect parsing of RPC responses from the configured
-  endpoint and are acceptable for a Devnet prototype; revisit (e.g. `@solana/kit`) before
-  production.
+- `package.json` `overrides` pins `uuid` to `^11.1.1` for `@solana/web3.js`'s dependencies.
+  `rpc-websockets` otherwise pulls ESM-only `uuid@14` and `require()`s it, which crashes on
+  runtimes without `require(esm)` (seen on Vercel as `ERR_REQUIRE_ESM`); 11.1.1 ships a
+  CommonJS build and also fixes the `uuid` advisory.
+- `npm audit` still reports moderate advisories in `stream-json` (via `jayson`, the RPC
+  client). They affect parsing of RPC responses from the configured endpoint and are
+  acceptable for a Devnet prototype; revisit (e.g. `@solana/kit`) before production.
 
 ---
 
