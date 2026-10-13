@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wallet-prototype-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet_prototype
+    ports:
+      - "5432:5432"
+    volumes:
+      - wallet_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet_prototype"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  wallet_pgdata:
