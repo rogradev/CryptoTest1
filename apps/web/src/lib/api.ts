@@ -36,8 +36,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     // fall through
   }
-  if (!body) throw new ApiError(`Unexpected response from API (HTTP ${response.status})`, 'BAD_RESPONSE', response.status);
-  if (!body.ok) throw new ApiError(body.error.message, body.error.code, response.status);
+  // Platform errors (e.g. a crashed function) are not in our { ok, ... } envelope.
+  if (!body || typeof body.ok !== 'boolean') {
+    throw new ApiError(`Wallet API unavailable (HTTP ${response.status})`, 'BAD_RESPONSE', response.status);
+  }
+  if (!body.ok) {
+    const details = body.error.code === 'CONFIG_ERROR' && Array.isArray(body.error.details) ? ` ${body.error.details.join('; ')}` : '';
+    throw new ApiError(`${body.error.message}${details}`, body.error.code, response.status);
+  }
   return body.data;
 }
 
