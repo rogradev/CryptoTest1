@@ -115,15 +115,18 @@ Key design decisions:
 - **Identity is a plain `userId: string`.** Services never look at tokens, sessions or the
   demo user. `DemoUserMiddleware` (`apps/api/src/middleware/demoUser.ts`) sets
   `req.user = { id, authMode }`; controllers read it via `requireUserId(req)`. To integrate
-  with the client's backend, pass their JWT/session middleware as `authenticate` in
-  `createApp()` — nothing else changes. `users.id` is `TEXT` so any identifier format fits.
+  with the client's backend, swap it for their JWT/session middleware in
+  `createHttpApp()` (`apps/api/src/container.ts`) — nothing else changes. `users.id` is `TEXT` so any identifier format fits.
 - **Blockchain behind an interface.** `BlockchainProvider` (`apps/api/src/blockchain/types.ts`)
   is the only boundary to the chain; `@solana/web3.js` is imported in exactly one file,
   `SolanaDevnetProvider`. `sendTransaction()`, `getTransaction()` and `detectDeposits()`
   slot into this interface in the next milestone without touching controllers or the UI.
+- **Two runtimes, one app.** `src/server.ts` runs a long-lived server (`npm run dev`,
+  `npm start`); `src/app.ts` default-exports the same app for Vercel Functions.
 - **Composition root.** `apps/api/src/container.ts` wires repositories, cipher, provider and
-  services. `createApp()` receives dependencies, which is what makes the HTTP tests run
-  against in-memory fakes.
+  services, and `createHttpApp()` picks the authentication middleware. `createApp()`
+  (`createApp.ts`) receives dependencies, which is what makes the HTTP tests run against
+  in-memory fakes.
 - **Money is integer lamports.** `BIGINT` in SQL, `bigint` in TypeScript, strings over JSON.
   `packages/shared/src/lamports.ts` converts SOL ↔ lamports with exact string arithmetic;
   conversion to SOL happens only for display.
@@ -146,9 +149,10 @@ Key design decisions:
 │   │   │   ├── middleware/        auth contract, DemoUserMiddleware, error handler
 │   │   │   ├── repositories/      parameterized SQL access (users, wallet_accounts)
 │   │   │   ├── services/          WalletService, WithdrawalService
-│   │   │   ├── app.ts             Express app factory
+│   │   │   ├── app.ts             Vercel Function entrypoint (default-exports the app)
+│   │   │   ├── createApp.ts       Express app factory
 │   │   │   ├── container.ts       composition root
-│   │   │   └── server.ts          entry point
+│   │   │   └── server.ts          long-running server entry point (local / npm start)
 │   │   └── test/                  Vitest unit, HTTP and PostgreSQL integration tests
 │   └── web/                       React + Vite + Tailwind CSS
 │       └── src/
@@ -162,6 +166,7 @@ Key design decisions:
 ├── docs/screenshots/              screenshots of the running checkpoint
 ├── scripts/init-env.mjs           creates .env with a random encryption key
 ├── docker-compose.yml             PostgreSQL 16
+├── vercel.json                    Vercel multi-service deployment (api + web)
 ├── .env.example
 ├── eslint.config.js
 ├── package.json                   npm workspaces
@@ -335,6 +340,42 @@ is set:
 ```bash
 TEST_DATABASE_URL=postgresql://wallet:wallet@localhost:5432/wallet_prototype npm test -w @wallet/api
 ```
+
+---
+
+## Deploying to Vercel (services)
+
+`vercel.json` deploys the repo as **one Vercel project with two services** on one domain:
+
+| Service | Root | Framework | Public path | Notes |
+| --- | --- | --- | --- | --- |
+| `api` | `apps/api` | Express | `/api/*` | Vercel Function from `src/app.ts` (default export). Receives the original path, e.g. `/api/wallet` |
+| `web` | `apps/web` | Vite | `/*` (catch-all) | Static build of `dist/` |
+
+Rewrites are ordered most-specific first: `/api/(.*)` → `api`, then `/(.*)` → `web`.
+The browser calls the API with same-origin relative URLs (`/api/...`), so no CORS
+configuration or service binding is needed: there are no server-side calls between
+services. Each service's `buildCommand` first builds `@wallet/shared`, which both import.
+
+Before the first deploy:
+
+1. Provision a hosted PostgreSQL (e.g. Neon or another Vercel Marketplace Postgres; prefer
+   a pooled connection string for serverless), then run against it once:
+   ```bash
+   DATABASE_URL=<hosted-url> npm run db:migrate
+   DATABASE_URL=<hosted-url> npm run db:seed
+   ```
+2. Set project environment variables: `DATABASE_URL`, `WALLET_ENCRYPTION_KEY` (a new key,
+   never the local one), and optionally `SOLANA_RPC_URL` (a dedicated Devnet RPC is
+   recommended), `DEMO_USER_ID`. `CORS_ORIGIN` is not needed for the same-origin setup.
+3. Deploy (`vercel deploy` or connect the Git repository).
+
+Test the deployment topology locally with `vercel dev` (or `vercel dev -L` without
+linking). It runs both services behind the same rewrites as production and reads `.env`.
+
+> The demo user middleware means **anyone who can open the deployment controls the demo
+> wallet** (validation only — nothing can be sent in this checkpoint). Keep the deployment
+> behind Vercel Deployment Protection until real authentication is integrated.
 
 ---
 

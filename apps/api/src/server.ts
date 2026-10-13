@@ -1,9 +1,7 @@
 import { EnvValidationError, loadEnv } from './config/env.js';
-import { createApp } from './app.js';
-import { createContainer } from './container.js';
+import { createContainer, createHttpApp } from './container.js';
 import { createPool } from './db/pool.js';
 import { logger } from './lib/logger.js';
-import { demoUserMiddleware } from './middleware/demoUser.js';
 import { SolanaDevnetProvider } from './blockchain/solanaDevnetProvider.js';
 
 async function main() {
@@ -25,11 +23,7 @@ async function main() {
     logger.warn('Solana Devnet RPC not reachable at startup — will retry on demand', { rpcUrl: env.SOLANA_RPC_URL });
   }
 
-  const app = createApp({
-    ...container,
-    authenticate: demoUserMiddleware(env.DEMO_USER_ID),
-    corsOrigin: env.CORS_ORIGIN.split(',').map((o) => o.trim()),
-  });
+  const app = createHttpApp(env, container);
 
   const server = app.listen(env.PORT, () => {
     logger.info('Wallet API listening', { port: env.PORT, network: 'solana-devnet', authMode: 'demo' });

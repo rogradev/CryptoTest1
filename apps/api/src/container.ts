@@ -1,9 +1,11 @@
 import type pg from 'pg';
 import { SOLANA_NETWORK, type HealthDto } from '@wallet/shared';
 import type { Env } from './config/env.js';
+import { createApp } from './createApp.js';
 import { SolanaDevnetProvider } from './blockchain/solanaDevnetProvider.js';
 import type { BlockchainProvider } from './blockchain/types.js';
 import { SecretCipher } from './lib/secretCipher.js';
+import { demoUserMiddleware } from './middleware/demoUser.js';
 import { PgUserRepository } from './repositories/userRepository.js';
 import { PgWalletAccountRepository } from './repositories/walletAccountRepository.js';
 import { WalletService } from './services/walletService.js';
@@ -33,4 +35,17 @@ export function createContainer(env: Env, pool: pg.Pool, blockchain: BlockchainP
   };
 
   return { users, wallets, blockchain, walletService, withdrawalService, healthCheck };
+}
+
+/**
+ * Builds the HTTP app for a runtime (long-running server or Vercel Function).
+ * The authentication middleware is chosen here — replace DemoUserMiddleware
+ * with the client's JWT/session middleware when integrating.
+ */
+export function createHttpApp(env: Env, container: ReturnType<typeof createContainer>) {
+  return createApp({
+    ...container,
+    authenticate: demoUserMiddleware(env.DEMO_USER_ID),
+    corsOrigin: env.CORS_ORIGIN.split(',').map((o) => o.trim()),
+  });
 }

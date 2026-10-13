@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createApp } from '../src/app.js';
+import { createApp } from '../src/createApp.js';
 import { demoUserMiddleware } from '../src/middleware/demoUser.js';
 import { SecretCipher } from '../src/lib/secretCipher.js';
 import { WalletService } from '../src/services/walletService.js';
