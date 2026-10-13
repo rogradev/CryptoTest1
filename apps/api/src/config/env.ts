@@ -81,11 +81,34 @@ export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 
 let cached: Env | undefined;
 
+/** Loads `<repo>/.env` into process.env if present. Real env vars always win. */
+function loadDotenv(): void {
+  const envFile = path.join(repoRoot, '.env');
+  if (existsSync(envFile)) dotenv.config({ path: envFile, quiet: true });
+}
+
 /** Loads `<repo>/.env` (if present) and validates process.env. */
 export function loadEnv(): Env {
   if (cached) return cached;
-  const envFile = path.join(repoRoot, '.env');
-  if (existsSync(envFile)) dotenv.config({ path: envFile, quiet: true });
+  loadDotenv();
   cached = parseEnv(process.env);
   return cached;
+}
+
+const databaseEnvSchema = envSchema.pick({ DATABASE_URL: true, DEMO_USER_ID: true });
+export type DatabaseEnv = z.infer<typeof databaseEnvSchema>;
+
+/**
+ * Subset needed by database scripts (migrate, seed), so they can target a hosted
+ * database with only DATABASE_URL set — no wallet encryption key required.
+ */
+export function loadDatabaseEnv(): DatabaseEnv {
+  loadDotenv();
+  const result = databaseEnvSchema.safeParse(process.env);
+  if (!result.success) {
+    throw new EnvValidationError(
+      result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),
+    );
+  }
+  return result.data;
 }

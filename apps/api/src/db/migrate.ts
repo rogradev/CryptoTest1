@@ -1,8 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import pg from 'pg';
-import { z } from 'zod';
-import { loadEnv, repoRoot } from '../config/env.js';
+import { loadDatabaseEnv, repoRoot } from '../config/env.js';
 
 /**
  * Minimal forward-only SQL migration runner.
@@ -39,12 +38,8 @@ export async function runMigrations(client: pg.ClientBase): Promise<string[]> {
 }
 
 async function main() {
-  // Migrations need only the database URL.
-  const databaseUrl = z
-    .string({ error: 'DATABASE_URL is required (see .env.example)' })
-    .min(1)
-    .parse(loadEnvSafe() ?? process.env.DATABASE_URL);
-  const client = new pg.Client({ connectionString: databaseUrl });
+  const { DATABASE_URL } = loadDatabaseEnv();
+  const client = new pg.Client({ connectionString: DATABASE_URL });
   await client.connect();
   try {
     await client.query('SELECT pg_advisory_lock(727274)');
@@ -52,14 +47,6 @@ async function main() {
     console.log(applied.length ? `Applied migrations:\n  ${applied.join('\n  ')}` : 'Database is up to date.');
   } finally {
     await client.end();
-  }
-}
-
-function loadEnvSafe(): string | undefined {
-  try {
-    return loadEnv().DATABASE_URL;
-  } catch {
-    return undefined;
   }
 }
 

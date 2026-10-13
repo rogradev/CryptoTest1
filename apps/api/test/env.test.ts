@@ -65,3 +65,20 @@ describe('decodeEncryptionKey', () => {
     expect(decodeEncryptionKey('nope')).toBeNull();
   });
 });
+
+describe('loadDatabaseEnv', () => {
+  it('needs only DATABASE_URL (no wallet encryption key)', async () => {
+    const { loadDatabaseEnv } = await import('../src/config/env.js');
+    const saved = { ...process.env };
+    try {
+      process.env.DATABASE_URL = 'postgresql://u:p@db.example.com:5432/app?sslmode=require';
+      process.env.WALLET_ENCRYPTION_KEY = '';
+      expect(loadDatabaseEnv()).toEqual({
+        DATABASE_URL: 'postgresql://u:p@db.example.com:5432/app?sslmode=require',
+        DEMO_USER_ID: process.env.DEMO_USER_ID ?? 'demo-user-001',
+      });
+    } finally {
+      process.env = saved;
+    }
+  });
+});

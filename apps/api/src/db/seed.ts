@@ -1,9 +1,9 @@
 import pg from 'pg';
-import { loadEnv } from '../config/env.js';
+import { loadDatabaseEnv } from '../config/env.js';
 
 /** Seeds the temporary development user. Safe to run repeatedly. */
 async function main() {
-  const env = loadEnv();
+  const env = loadDatabaseEnv();
   const client = new pg.Client({ connectionString: env.DATABASE_URL });
   await client.connect();
   try {
