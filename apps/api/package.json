@@ -12,8 +12,9 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:migrate": "npm run db:embed && tsx src/db/migrate.ts",
+    "db:seed": "tsx src/db/seed.ts",
+    "db:embed": "node scripts/embed-migrations.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.0",

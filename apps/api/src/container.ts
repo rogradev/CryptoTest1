@@ -1,7 +1,9 @@
 import type pg from 'pg';
 import { SOLANA_NETWORK, type HealthDto } from '@wallet/shared';
 import type { Env } from './config/env.js';
+import type { RequestHandler } from 'express';
 import { createApp } from './createApp.js';
+import { createDatabaseBootstrap } from './db/bootstrap.js';
 import { SolanaDevnetProvider } from './blockchain/solanaDevnetProvider.js';
 import type { BlockchainProvider } from './blockchain/types.js';
 import { SecretCipher } from './lib/secretCipher.js';
@@ -34,7 +36,11 @@ export function createContainer(env: Env, pool: pg.Pool, blockchain: BlockchainP
     };
   };
 
-  return { users, wallets, blockchain, walletService, withdrawalService, healthCheck };
+  const ensureDatabaseReady = env.DB_AUTO_MIGRATE
+    ? createDatabaseBootstrap(pool, { demoUserId: env.DEMO_USER_ID })
+    : async () => undefined;
+
+  return { users, wallets, blockchain, walletService, withdrawalService, healthCheck, ensureDatabaseReady };
 }
 
 /**
@@ -43,9 +49,16 @@ export function createContainer(env: Env, pool: pg.Pool, blockchain: BlockchainP
  * with the client's JWT/session middleware when integrating.
  */
 export function createHttpApp(env: Env, container: ReturnType<typeof createContainer>) {
+  const demoUser = demoUserMiddleware(env.DEMO_USER_ID);
+  // Database readiness runs first so a fresh database (e.g. a new deployment)
+  // gets its schema and demo user before any wallet request touches it.
+  const authenticate: RequestHandler = async (req, res, next) => {
+    await container.ensureDatabaseReady();
+    demoUser(req, res, next);
+  };
   return createApp({
     ...container,
-    authenticate: demoUserMiddleware(env.DEMO_USER_ID),
+    authenticate,
     corsOrigin: env.CORS_ORIGIN.split(',').map((o) => o.trim()),
   });
 }

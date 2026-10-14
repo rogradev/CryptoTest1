@@ -182,8 +182,19 @@ Key design decisions:
 `DATABASE_URL` at it.
 
 `npm run db:migrate` applies every `database/migrations/*.sql` file in order, each in its own
-transaction, recording them in `schema_migrations` (an advisory lock prevents concurrent runs).
-Migrations are forward-only; add new files such as `002_….sql`.
+transaction, recording them in `schema_migrations`. Migrations are forward-only; add new files
+such as `002_….sql`.
+
+**Automatic migrations (`DB_AUTO_MIGRATE=true`, the default).** On the first API request each
+server/function instance applies pending migrations and ensures the demo user exists, so a
+fresh database (such as a new Vercel deployment's) needs no manual step. Every step runs in a
+transaction holding a transaction-scoped advisory lock, so simultaneous cold starts are safe,
+including behind transaction-mode poolers (Neon, PgBouncer).
+
+The SQL files are embedded into `apps/api/src/db/migrations.generated.ts` (serverless bundles
+cannot read repository files at runtime). After adding or editing a migration run
+`npm run db:embed -w @wallet/api` (`db:migrate` does it automatically); a test fails if the
+generated file is out of sync.
 
 ### Schema
 
@@ -217,6 +228,7 @@ invalid variable (values are never echoed).
 | `SOLANA_CLUSTER` | `devnet` | Must be `devnet`; anything else is rejected |
 | `WALLET_ENCRYPTION_KEY` | — (required) | 32 random bytes, base64 (44 chars) or hex (64 chars) |
 | `DEMO_USER_ID` | `demo-user-001` | Identity injected by `DemoUserMiddleware` |
+| `DB_AUTO_MIGRATE` | `true` | Apply pending migrations and seed the demo user on the first API request |
 
 Generate a key manually:
 
@@ -359,12 +371,10 @@ services. Each service's `buildCommand` first builds `@wallet/shared`, which bot
 
 Before the first deploy:
 
-1. Provision a hosted PostgreSQL (e.g. Neon or another Vercel Marketplace Postgres; prefer
-   a pooled connection string for serverless), then run against it once:
-   ```bash
-   DATABASE_URL=<hosted-url> npm run db:migrate
-   DATABASE_URL=<hosted-url> npm run db:seed
-   ```
+1. Provision a hosted PostgreSQL (e.g. Neon via the Vercel Marketplace, which sets
+   `DATABASE_URL`). The schema and demo user are created automatically on the first API
+   request (`DB_AUTO_MIGRATE`). To do it by hand instead:
+   `DATABASE_URL=<hosted-url> npm run db:migrate && DATABASE_URL=<hosted-url> npm run db:seed`.
 2. Set project environment variables: `DATABASE_URL`, `WALLET_ENCRYPTION_KEY` (a new key,
    never the local one), and optionally `SOLANA_RPC_URL` (a dedicated Devnet RPC is
    recommended), `DEMO_USER_ID`. `CORS_ORIGIN` is not needed for the same-origin setup.

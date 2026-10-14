@@ -37,6 +37,17 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     return;
   }
 
+  // PostgreSQL "undefined_table": the schema has not been migrated.
+  if (typeof err === 'object' && err !== null && 'code' in err && err.code === '42P01') {
+    logger.error('Database schema missing', { path: req.path });
+    const body: ApiFailure = {
+      ok: false,
+      error: { code: 'DATABASE_NOT_MIGRATED', message: 'Database schema is missing. Run `npm run db:migrate`.' },
+    };
+    res.status(503).json(body);
+    return;
+  }
+
   logger.error('Unhandled error', {
     path: req.path,
     error: err instanceof Error ? err.message : 'unknown',

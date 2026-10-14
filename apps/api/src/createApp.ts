@@ -27,7 +27,7 @@ export function createApp(options: AppOptions) {
     res.on('finish', () => {
       logger.info('http', {
         method: req.method,
-        path: req.path,
+        path: req.originalUrl.split('?')[0],
         status: res.statusCode,
         ms: Math.round(performance.now() - started),
       });

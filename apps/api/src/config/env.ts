@@ -54,6 +54,11 @@ export const envSchema = z.object({
       return key;
     }),
   DEMO_USER_ID: z.string().min(1).default('demo-user-001'),
+  /** Apply pending migrations (and seed the demo user) on the first API request. */
+  DB_AUTO_MIGRATE: z
+    .enum(['true', 'false'], { error: 'DB_AUTO_MIGRATE must be "true" or "false"' })
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export type Env = z.infer<typeof envSchema>;
