@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { InvalidAmountError, solToLamports } from '@wallet/shared';
 
 /**
  * Environment configuration, validated once at startup.
@@ -24,7 +25,7 @@ export function decodeEncryptionKey(raw: string): Buffer | null {
   return null;
 }
 
-export const envSchema = z.object({
+const baseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3001),
   DATABASE_URL: z
@@ -55,11 +56,49 @@ export const envSchema = z.object({
     }),
   DEMO_USER_ID: z.string().min(1).default('demo-user-001'),
   /** Apply pending migrations (and seed the demo user) on the first API request. */
-  DB_AUTO_MIGRATE: z
-    .enum(['true', 'false'], { error: 'DB_AUTO_MIGRATE must be "true" or "false"' })
-    .default('true')
-    .transform((v) => v === 'true'),
+  DB_AUTO_MIGRATE: booleanFlag('DB_AUTO_MIGRATE', 'true'),
+  /** Real withdrawals are off unless explicitly enabled for an environment. */
+  WITHDRAWALS_ENABLED: booleanFlag('WITHDRAWALS_ENABLED', 'false'),
+  /** Shared demo access code required to execute withdrawals (mandatory in production). */
+  WITHDRAWAL_ACCESS_CODE: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() ? v.trim() : null))
+    .refine((v) => v === null || v.length >= 8, 'WITHDRAWAL_ACCESS_CODE must be at least 8 characters'),
+  /** Maximum SOL per withdrawal (demo safety cap). */
+  WITHDRAWAL_MAX_SOL: z
+    .string()
+    .default('1')
+    .transform((v, ctx) => {
+      try {
+        const lamports = solToLamports(v);
+        if (lamports > 0n) return lamports;
+      } catch (error) {
+        if (!(error instanceof InvalidAmountError)) throw error;
+      }
+      ctx.addIssue({ code: 'custom', message: 'WITHDRAWAL_MAX_SOL must be a positive SOL amount, e.g. "1" or "0.5"' });
+      return z.NEVER;
+    }),
+  /** Background deposit sync interval for the long-running server (0 disables). */
+  DEPOSIT_SYNC_INTERVAL_MS: z.coerce.number().int().min(0).default(15_000),
 });
+
+export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.NODE_ENV === 'production' && env.WITHDRAWALS_ENABLED && !env.WITHDRAWAL_ACCESS_CODE) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['WITHDRAWAL_ACCESS_CODE'],
+      message: 'WITHDRAWAL_ACCESS_CODE is required when WITHDRAWALS_ENABLED=true in production',
+    });
+  }
+});
+
+function booleanFlag(name: string, defaultValue: 'true' | 'false') {
+  return z
+    .enum(['true', 'false'], { error: `${name} must be "true" or "false"` })
+    .default(defaultValue)
+    .transform((v) => v === 'true');
+}
 
 export type Env = z.infer<typeof envSchema>;
 
@@ -100,7 +139,7 @@ export function loadEnv(): Env {
   return cached;
 }
 
-const databaseEnvSchema = envSchema.pick({ DATABASE_URL: true, DEMO_USER_ID: true });
+const databaseEnvSchema = baseEnvSchema.pick({ DATABASE_URL: true, DEMO_USER_ID: true });
 export type DatabaseEnv = z.infer<typeof databaseEnvSchema>;
 
 /**

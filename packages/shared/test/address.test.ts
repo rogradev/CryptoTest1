@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isSolanaAddressFormat, shortenAddress } from '../src/address.js';
+import { base58Encode, isSolanaAddressFormat, shortenAddress } from '../src/address.js';
 
 describe('isSolanaAddressFormat', () => {
   it('accepts valid 32-byte base58 addresses', () => {
@@ -23,5 +23,18 @@ describe('isSolanaAddressFormat', () => {
 describe('shortenAddress', () => {
   it('keeps the head and tail', () => {
     expect(shortenAddress('9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM')).toBe('9WzD…AWWM');
+  });
+});
+
+describe('base58Encode', () => {
+  it('matches known vectors', () => {
+    expect(base58Encode(new Uint8Array(32))).toBe('11111111111111111111111111111111');
+    expect(base58Encode(new TextEncoder().encode('Hello World!'))).toBe('2NEpo7TZRRrLZSi2U');
+    expect(base58Encode(Uint8Array.from([0, 0, 1]))).toBe('112');
+  });
+
+  it('round-trips through the address check for 32-byte keys', () => {
+    const bytes = Uint8Array.from({ length: 32 }, (_, i) => (i * 37 + 11) % 256);
+    expect(isSolanaAddressFormat(base58Encode(bytes))).toBe(true);
   });
 });

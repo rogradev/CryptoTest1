@@ -1,4 +1,5 @@
 import type {
+  ActivityListDto,
   ApiResponse,
   CurrentUserDto,
   DepositAddressDto,
@@ -6,6 +7,9 @@ import type {
   OnChainBalanceDto,
   TransactionListDto,
   WalletDto,
+  WalletOverviewDto,
+  WithdrawalDto,
+  WithdrawalRequest,
   WithdrawalValidationDto,
   WithdrawalValidationRequest,
 } from '@wallet/shared';
@@ -20,12 +24,16 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit & { headers?: Record<string, string> }): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`/api${path}`, {
       ...init,
-      headers: { Accept: 'application/json', ...(init?.body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: {
+        Accept: 'application/json',
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
     });
   } catch {
     throw new ApiError('Cannot reach the wallet API. Is the backend running?', 'NETWORK_ERROR', 0);
@@ -64,4 +72,19 @@ export const api = {
   transactions: (limit = 10) => request<TransactionListDto>(`/wallet/transactions?limit=${limit}`),
   validateWithdrawal: (input: WithdrawalValidationRequest) =>
     request<WithdrawalValidationDto>('/wallet/withdrawals/validate', { method: 'POST', body: JSON.stringify(input) }),
+  /** Ledger balance + on-chain diagnostics. Also lets the server check for new deposits. */
+  overview: () => request<WalletOverviewDto>('/wallet/overview'),
+  /** Same as overview, but asks the server to sync with Devnet right now. */
+  sync: () => request<WalletOverviewDto>('/wallet/sync', { method: 'POST' }),
+  activity: (limit = 20) => request<ActivityListDto>(`/wallet/activity?limit=${limit}`),
+  withdraw: (input: WithdrawalRequest, idempotencyKey: string, accessCode?: string) =>
+    request<WithdrawalDto>('/wallet/withdrawals', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+        ...(accessCode ? { 'X-Withdrawal-Access-Code': accessCode } : {}),
+      },
+    }),
+  withdrawal: (id: string) => request<WithdrawalDto>(`/wallet/withdrawals/${id}`),
 };

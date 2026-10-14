@@ -2,13 +2,29 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SendTransactionError,
+  SystemProgram,
+  Transaction,
   type ConfirmedSignatureInfo,
+  type ParsedInstruction,
   type ParsedTransactionWithMeta,
+  type PartiallyDecodedInstruction,
 } from '@solana/web3.js';
-import { SOLANA_NETWORK } from '@wallet/shared';
+import { base58Encode, SOLANA_NETWORK } from '@wallet/shared';
 import { Errors } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
-import type { BlockchainProvider, BlockchainTransaction, NetworkStatus, WalletResult } from './types.js';
+import {
+  TransactionRejectedError,
+  type BlockchainProvider,
+  type BlockchainTransaction,
+  type NativeTransfer,
+  type NetworkStatus,
+  type SignatureInfo,
+  type SignatureStatus,
+  type SignedTransfer,
+  type TransactionDetails,
+  type WalletResult,
+} from './types.js';
 
 /** Genesis hash of Solana Devnet. Used to prove we are not talking to mainnet. */
 export const DEVNET_GENESIS_HASH = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
@@ -83,6 +99,121 @@ export class SolanaDevnetProvider implements BlockchainProvider {
     return `https://explorer.solana.com/${kind}/${value}?cluster=devnet`;
   }
 
+  async getRecentSignatures(address: string, limit: number): Promise<SignatureInfo[]> {
+    await this.assertDevnet();
+    const infos = await this.#rpc(() =>
+      this.#connection.getSignaturesForAddress(new PublicKey(address), { limit }, COMMITMENT),
+    );
+    return infos.map((info) => ({
+      signature: info.signature,
+      slot: info.slot,
+      blockTime: info.blockTime ? new Date(info.blockTime * 1000) : null,
+      status: info.confirmationStatus ?? 'confirmed',
+      failed: info.err !== null,
+    }));
+  }
+
+  async getTransaction(signature: string): Promise<TransactionDetails | null> {
+    await this.assertDevnet();
+    const tx = await this.#rpc(() =>
+      this.#connection.getParsedTransaction(signature, { commitment: COMMITMENT, maxSupportedTransactionVersion: 0 }),
+    );
+    if (!tx?.meta) return null;
+    const feePayer = tx.transaction.message.accountKeys[0]?.pubkey.toBase58() ?? '';
+    const instructions = [
+      ...tx.transaction.message.instructions,
+      ...(tx.meta.innerInstructions ?? []).flatMap((inner) => inner.instructions),
+    ];
+    return {
+      signature,
+      slot: tx.slot,
+      blockTime: tx.blockTime ? new Date(tx.blockTime * 1000) : null,
+      failed: tx.meta.err !== null,
+      feeLamports: BigInt(tx.meta.fee),
+      feePayer,
+      transfers: instructions.flatMap(toNativeTransfer),
+    };
+  }
+
+  async getSignatureStatuses(signatures: string[]): Promise<Map<string, SignatureStatus | null>> {
+    const result = new Map<string, SignatureStatus | null>();
+    if (signatures.length === 0) return result;
+    await this.assertDevnet();
+    for (let i = 0; i < signatures.length; i += 256) {
+      const batch = signatures.slice(i, i + 256);
+      const { value } = await this.#rpc(() =>
+        this.#connection.getSignatureStatuses(batch, { searchTransactionHistory: true }),
+      );
+      batch.forEach((signature, j) => {
+        const status = value[j];
+        result.set(
+          signature,
+          status
+            ? {
+                status: status.confirmationStatus ?? 'processed',
+                failed: status.err !== null,
+                error: status.err ? JSON.stringify(status.err) : null,
+              }
+            : null,
+        );
+      });
+    }
+    return result;
+  }
+
+  async getBlockHeight(): Promise<number> {
+    await this.assertDevnet();
+    return this.#rpc(() => this.#connection.getBlockHeight(COMMITMENT));
+  }
+
+  async getMinimumBalanceForRentExemption(): Promise<bigint> {
+    await this.assertDevnet();
+    return BigInt(await this.#rpc(() => this.#connection.getMinimumBalanceForRentExemption(0)));
+  }
+
+  async createSignedTransfer(params: {
+    secretKey: Uint8Array;
+    destination: string;
+    lamports: bigint;
+  }): Promise<SignedTransfer> {
+    await this.assertDevnet();
+    const from = Keypair.fromSecretKey(params.secretKey);
+    const { blockhash, lastValidBlockHeight } = await this.#rpc(() => this.#connection.getLatestBlockhash(COMMITMENT));
+    const tx = new Transaction({ feePayer: from.publicKey, blockhash, lastValidBlockHeight }).add(
+      SystemProgram.transfer({
+        fromPubkey: from.publicKey,
+        toPubkey: new PublicKey(params.destination),
+        lamports: params.lamports,
+      }),
+    );
+    tx.sign(from);
+    if (!tx.signature) throw new Error('Transaction signing produced no signature');
+    return {
+      signature: base58Encode(tx.signature),
+      serialized: tx.serialize(),
+      lastValidBlockHeight,
+    };
+  }
+
+  async sendRawTransaction(serialized: Uint8Array): Promise<string> {
+    await this.assertDevnet();
+    try {
+      return await this.#connection.sendRawTransaction(serialized, {
+        skipPreflight: false,
+        preflightCommitment: COMMITMENT,
+        maxRetries: 5,
+      });
+    } catch (error) {
+      // Preflight simulation failure: the transaction is invalid and will never land.
+      if (error instanceof SendTransactionError) throw new TransactionRejectedError(error.message);
+      // Anything else (timeout, network) is ambiguous: it may still land.
+      logger.warn('sendRawTransaction failed with an ambiguous error', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw Errors.blockchainUnavailable();
+    }
+  }
+
   /** Refuses to operate unless the RPC endpoint reports the devnet genesis hash. */
   async assertDevnet(): Promise<void> {
     if (this.#networkVerified) return;
@@ -134,4 +265,15 @@ export function normalizeTransaction(
   const isFeePayer = index === 0;
   const direction = delta > 0n ? 'inbound' : delta < 0n ? (isFeePayer && delta === -feeLamports ? 'self' : 'outbound') : 'self';
   return { ...base, direction, amountLamports: delta, feeLamports };
+}
+
+/** Extracts a native SOL transfer from a parsed System Program instruction. */
+function toNativeTransfer(ix: ParsedInstruction | PartiallyDecodedInstruction): NativeTransfer[] {
+  if (!('parsed' in ix) || ix.program !== 'system') return [];
+  const parsed = ix.parsed as { type?: string; info?: Record<string, unknown> };
+  if (parsed.type !== 'transfer' && parsed.type !== 'transferWithSeed') return [];
+  const { source, destination, lamports } = parsed.info ?? {};
+  if (typeof source !== 'string' || typeof destination !== 'string') return [];
+  if (typeof lamports !== 'number' && typeof lamports !== 'string') return [];
+  return [{ source, destination, lamports: BigInt(lamports) }];
 }

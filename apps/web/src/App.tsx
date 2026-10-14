@@ -12,9 +12,9 @@ import { useWallet } from './hooks/useWallet';
 import { api } from './lib/api';
 
 export function App() {
-  const wallet = useWallet();
-  const health = useAsync(api.health);
   const [modal, setModal] = useState<'add-funds' | 'withdraw' | null>(null);
+  const wallet = useWallet({ fastPolling: modal !== null });
+  const health = useAsync(api.health);
   const close = () => setModal(null);
 
   useEffect(() => {
@@ -42,10 +42,10 @@ export function App() {
             </Button>
           </div>
         ) : (
-          <main className="mt-8 grid gap-6 lg:mt-10 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <main className="mt-8 grid grid-cols-[minmax(0,1fr)] gap-6 lg:mt-10 lg:grid-cols-[minmax(0,1fr)_340px]">
             <div className="space-y-6">
               <BalanceCard state={wallet} onAddFunds={() => setModal('add-funds')} onWithdraw={() => setModal('withdraw')} />
-              <TransactionsCard state={wallet.transactions} />
+              <TransactionsCard state={wallet.activity} />
             </div>
             <SystemCard health={health} />
           </main>

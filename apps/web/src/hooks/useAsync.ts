@@ -3,10 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 export interface AsyncState<T> {
   data: T | null;
   error: string | null;
+  /** True until the first non-null result (or an error). */
   loading: boolean;
   /** True while re-fetching with existing data on screen. */
   refreshing: boolean;
-  reload: () => Promise<T | null>;
+  /** `silent` refetches without the refreshing indicator (background polling). */
+  reload: (options?: { silent?: boolean }) => Promise<T | null>;
 }
 
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncState<T> {
@@ -20,26 +22,38 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncSt
     fnRef.current = fn;
   });
 
-  const reload = useCallback(async () => {
-    if (hasData.current) setRefreshing(true);
-    else setLoading(true);
+  /** Fetches and stores the result. Only updates state after the await. */
+  const run = useCallback(async () => {
     try {
       const result = await fnRef.current();
-      hasData.current = result !== null;
+      if (result !== null) {
+        hasData.current = true;
+        setLoading(false);
+      }
       setData(result);
       setError(null);
       return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
+      setLoading(false);
       return null;
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
+  const reload = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (hasData.current && !options?.silent) setRefreshing(true);
+      return run();
+    },
+    [run],
+  );
+
   useEffect(() => {
-    void reload();
+    // run() only sets state after awaiting the fetch, never synchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 

@@ -28,6 +28,29 @@ function base58DecodedLength(input: string): number | null {
   return bytes.length + leadingZeros;
 }
 
+/** Base58 (Bitcoin alphabet) encoding, as used for Solana addresses and signatures. */
+export function base58Encode(bytes: Uint8Array): string {
+  const digits: number[] = [];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let i = 0; i < digits.length; i++) {
+      carry += (digits[i] ?? 0) << 8;
+      digits[i] = carry % 58;
+      carry = Math.floor(carry / 58);
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+  let leadingZeros = '';
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    leadingZeros += '1';
+  }
+  return leadingZeros + digits.reverse().map((d) => BASE58_ALPHABET[d]).join('');
+}
+
 export function isSolanaAddressFormat(address: string): boolean {
   if (address.length < 32 || address.length > 44) return false;
   return base58DecodedLength(address) === 32;

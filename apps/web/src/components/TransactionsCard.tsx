@@ -1,72 +1,80 @@
-import type { TransactionDto } from '@wallet/shared';
+import type { ActivityItemDto, ActivityListDto } from '@wallet/shared';
 import { shortenAddress } from '@wallet/shared';
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Inbox, Repeat, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ExternalLink, Inbox, RefreshCw } from 'lucide-react';
 import type { AsyncState } from '../hooks/useAsync';
-import type { TransactionListDto } from '@wallet/shared';
 import { formatSol, relativeTime } from '../lib/format';
 import { Pill } from './ui';
 
-const LABELS: Record<TransactionDto['direction'], string> = {
-  inbound: 'Deposit',
-  outbound: 'Withdrawal',
-  self: 'Network fee',
-  unknown: 'Transaction',
+type Tone = 'green' | 'amber' | 'red' | 'slate' | 'purple';
+
+/** User-facing labels for deposit and withdrawal lifecycle states. */
+export const STATUS_LABELS: Record<ActivityItemDto['status'], { label: string; tone: Tone }> = {
+  detected: { label: 'Detected', tone: 'amber' },
+  confirming: { label: 'Confirming', tone: 'amber' },
+  confirmed: { label: 'Confirmed', tone: 'green' },
+  pending: { label: 'Pending', tone: 'amber' },
+  processing: { label: 'Broadcasting', tone: 'amber' },
+  broadcast: { label: 'Broadcasting', tone: 'amber' },
+  completed: { label: 'Completed', tone: 'green' },
+  failed: { label: 'Failed', tone: 'red' },
+  cancelled: { label: 'Cancelled', tone: 'slate' },
 };
 
-function StatusPill({ status }: { status: TransactionDto['status'] }) {
-  if (status === 'failed') return <Pill tone="red">Failed</Pill>;
-  if (status === 'finalized') return <Pill tone="green">Finalized</Pill>;
-  if (status === 'confirmed') return <Pill tone="green">Confirmed</Pill>;
-  return <Pill tone="amber">Processing</Pill>;
-}
-
-function Row({ tx }: { tx: TransactionDto }) {
-  const Icon = tx.direction === 'inbound' ? ArrowDownLeft : tx.direction === 'outbound' ? ArrowUpRight : Repeat;
-  const amount = tx.amountLamports ? BigInt(tx.amountLamports) : null;
-  return (
-    <a
-      href={tx.explorerUrl}
-      target="_blank"
-      rel="noreferrer"
-      className="group flex items-center gap-4 rounded-2xl px-3 py-3 transition hover:bg-white/[0.03]"
-    >
+function Row({ item }: { item: ActivityItemDto }) {
+  const isDeposit = item.kind === 'deposit';
+  const Icon = isDeposit ? ArrowDownLeft : ArrowUpRight;
+  const amount = BigInt(item.amountLamports);
+  const status = STATUS_LABELS[item.status];
+  const content = (
+    <>
       <span
         className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${
-          tx.direction === 'inbound' ? 'bg-sol-green/10 text-sol-green' : 'bg-white/5 text-slate-300'
+          isDeposit ? 'bg-sol-green/10 text-sol-green' : 'bg-violet-400/10 text-violet-300'
         }`}
       >
         <Icon className="size-4.5" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-slate-100">{LABELS[tx.direction]}</div>
-        <div className="truncate font-mono text-[11px] text-slate-500 group-hover:text-slate-400">
-          {shortenAddress(tx.signature, 6)} · {relativeTime(tx.blockTime)}
+        <div className="flex items-center gap-1.5 text-sm font-medium text-slate-100">
+          {isDeposit ? 'Deposit' : 'Withdrawal'}
+          {item.counterparty && (
+            <span className="truncate font-mono text-[11px] font-normal text-slate-500">to {shortenAddress(item.counterparty)}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1 truncate font-mono text-[11px] text-slate-500 group-hover:text-slate-400">
+          {item.signature ? shortenAddress(item.signature, 6) : 'awaiting signature'} · {relativeTime(item.createdAt)}
+          {item.explorerUrl && <ExternalLink className="size-3 shrink-0 opacity-60" />}
         </div>
       </div>
       <div className="text-right">
-        <div
-          className={`tabular text-sm font-semibold ${
-            amount === null ? 'text-slate-400' : amount > 0n ? 'text-sol-green' : 'text-slate-100'
-          }`}
-        >
-          {amount === null ? '—' : `${amount > 0n ? '+' : ''}${formatSol(amount, 2)} SOL`}
+        <div className={`tabular text-sm font-semibold ${amount > 0n ? 'text-sol-green' : 'text-slate-100'} ${item.status === 'failed' ? 'line-through opacity-60' : ''}`}>
+          {amount > 0n ? '+' : ''}
+          {formatSol(amount, 2)} SOL
         </div>
         <div className="mt-1">
-          <StatusPill status={tx.status} />
+          <Pill tone={status.tone}>{status.label}</Pill>
         </div>
       </div>
+    </>
+  );
+  const className = 'group flex items-center gap-4 rounded-2xl px-3 py-3 transition hover:bg-white/[0.03]';
+  return item.explorerUrl ? (
+    <a href={item.explorerUrl} target="_blank" rel="noreferrer" className={className} title="View on Solana Explorer (devnet)">
+      {content}
     </a>
+  ) : (
+    <div className={className}>{content}</div>
   );
 }
 
-export function TransactionsCard({ state }: { state: AsyncState<TransactionListDto | null> }) {
-  const txs = state.data?.transactions ?? [];
+export function TransactionsCard({ state }: { state: AsyncState<ActivityListDto | null> }) {
+  const items = state.data?.items ?? [];
   return (
     <section className="card p-4 sm:p-6">
       <div className="flex items-center justify-between px-2 pb-3">
         <div>
           <h2 className="text-base font-semibold text-white">Recent Transactions</h2>
-          <p className="mt-0.5 text-xs text-slate-500">Read directly from Solana Devnet</p>
+          <p className="mt-0.5 text-xs text-slate-500">Deposits &amp; withdrawals · each verifiable on Solana Explorer</p>
         </div>
         {state.refreshing && <RefreshCw className="size-4 animate-spin text-slate-500" />}
       </div>
@@ -93,7 +101,7 @@ export function TransactionsCard({ state }: { state: AsyncState<TransactionListD
             Retry
           </button>
         </div>
-      ) : txs.length === 0 ? (
+      ) : items.length === 0 ? (
         <div className="flex flex-col items-center px-6 py-12 text-center">
           <div className="flex size-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03]">
             <Inbox className="size-6 text-slate-500" />
@@ -106,8 +114,8 @@ export function TransactionsCard({ state }: { state: AsyncState<TransactionListD
         </div>
       ) : (
         <div className="divide-y divide-white/[0.04]">
-          {txs.map((tx) => (
-            <Row key={tx.signature} tx={tx} />
+          {items.map((item) => (
+            <Row key={`${item.kind}-${item.id}`} item={item} />
           ))}
         </div>
       )}

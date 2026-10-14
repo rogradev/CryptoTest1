@@ -10,6 +10,10 @@ import { SecretCipher } from './lib/secretCipher.js';
 import { demoUserMiddleware } from './middleware/demoUser.js';
 import { PgUserRepository } from './repositories/userRepository.js';
 import { PgWalletAccountRepository } from './repositories/walletAccountRepository.js';
+import { AccountService } from './services/accountService.js';
+import { DepositSyncService } from './services/depositSyncService.js';
+import { LedgerService } from './services/ledgerService.js';
+import { WalletKeyStore } from './services/walletKeyStore.js';
 import { WalletService } from './services/walletService.js';
 import { WithdrawalService } from './services/withdrawalService.js';
 
@@ -17,8 +21,16 @@ import { WithdrawalService } from './services/withdrawalService.js';
 export function createContainer(env: Env, pool: pg.Pool, blockchain: BlockchainProvider = new SolanaDevnetProvider(env.SOLANA_RPC_URL)) {
   const users = new PgUserRepository(pool);
   const wallets = new PgWalletAccountRepository(pool);
-  const walletService = new WalletService(users, wallets, blockchain, new SecretCipher(env.WALLET_ENCRYPTION_KEY));
-  const withdrawalService = new WithdrawalService(walletService, blockchain);
+  const cipher = new SecretCipher(env.WALLET_ENCRYPTION_KEY);
+  const walletService = new WalletService(users, wallets, blockchain, cipher);
+  const ledger = new LedgerService(pool);
+  const withdrawalService = new WithdrawalService(pool, walletService, ledger, new WalletKeyStore(wallets, cipher), blockchain, {
+    enabled: env.WITHDRAWALS_ENABLED,
+    accessCode: env.WITHDRAWAL_ACCESS_CODE,
+    maxLamports: env.WITHDRAWAL_MAX_SOL,
+  });
+  const depositSync = new DepositSyncService(pool, walletService, ledger, blockchain, withdrawalService);
+  const accountService = new AccountService(pool, walletService, ledger, blockchain, depositSync, withdrawalService);
 
   const healthCheck = async (): Promise<HealthDto> => {
     const [database, solana] = await Promise.all([
@@ -40,7 +52,18 @@ export function createContainer(env: Env, pool: pg.Pool, blockchain: BlockchainP
     ? createDatabaseBootstrap(pool, { demoUserId: env.DEMO_USER_ID })
     : async () => undefined;
 
-  return { users, wallets, blockchain, walletService, withdrawalService, healthCheck, ensureDatabaseReady };
+  return {
+    users,
+    wallets,
+    blockchain,
+    ledger,
+    walletService,
+    withdrawalService,
+    depositSync,
+    accountService,
+    healthCheck,
+    ensureDatabaseReady,
+  };
 }
 
 /**

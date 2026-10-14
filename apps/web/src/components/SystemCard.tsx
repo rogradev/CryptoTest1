@@ -10,21 +10,22 @@ function Dot({ status }: { status: Status }) {
   return <span className={`size-2 rounded-full ${color}`} />;
 }
 
-const TABLES: { name: string; state: 'active' | 'ready' }[] = [
-  { name: 'users', state: 'active' },
-  { name: 'wallet_accounts', state: 'active' },
-  { name: 'deposits', state: 'ready' },
-  { name: 'withdrawals', state: 'ready' },
-  { name: 'ledger_entries', state: 'ready' },
-  { name: 'blockchain_transactions', state: 'ready' },
+const TABLES: { name: string; note: string }[] = [
+  { name: 'users', note: 'identity' },
+  { name: 'wallet_accounts', note: 'encrypted keys' },
+  { name: 'blockchain_transactions', note: 'on-chain record' },
+  { name: 'deposits', note: 'auto-detected' },
+  { name: 'withdrawals', note: 'signed & broadcast' },
+  { name: 'ledger_entries', note: 'append-only' },
 ];
 
 const ROADMAP: { label: string; done: boolean }[] = [
   { label: 'Real Devnet wallet + encrypted key storage', done: true },
   { label: 'Add Funds · address · QR · live balance', done: true },
-  { label: 'Automatic deposit detection', done: false },
-  { label: 'Internal ledger & confirmation states', done: false },
-  { label: 'Withdrawal signing & broadcasting', done: false },
+  { label: 'Automatic deposit detection', done: true },
+  { label: 'Internal ledger & confirmation states', done: true },
+  { label: 'Withdrawal signing & broadcasting', done: true },
+  { label: 'Integration with client authentication', done: false },
 ];
 
 export function SystemCard({ health }: { health: AsyncState<HealthDto> }) {
@@ -78,9 +79,14 @@ export function SystemCard({ health }: { health: AsyncState<HealthDto> }) {
         <p className="mt-1 text-xs text-slate-500">PostgreSQL schema · amounts stored as integer lamports</p>
         <ul className="mt-4 space-y-2">
           {TABLES.map((t) => (
-            <li key={t.name} className="flex items-center justify-between rounded-xl bg-white/[0.02] px-3 py-2">
-              <code className="font-mono text-xs text-slate-300">{t.name}</code>
-              {t.state === 'active' ? <Pill tone="green">In use</Pill> : <Pill tone="slate">Schema ready</Pill>}
+            <li key={t.name} className="flex items-center justify-between gap-3 rounded-xl bg-white/[0.02] px-3 py-2">
+              <span className="min-w-0">
+                <code className="block truncate font-mono text-xs text-slate-300">{t.name}</code>
+                <span className="block text-[10px] text-slate-500">{t.note}</span>
+              </span>
+              <span className="shrink-0">
+                <Pill tone="green">In use</Pill>
+              </span>
             </li>
           ))}
         </ul>

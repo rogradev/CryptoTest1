@@ -95,8 +95,88 @@ export interface WithdrawalValidationDto {
   destinationAddress: string;
   amountLamports: string | null;
   estimatedFeeLamports: string;
+  /** Internal ledger balance available for withdrawal. */
   availableLamports: string;
   issues: { field: 'destinationAddress' | 'amountSol'; message: string }[];
-  /** Withdrawal broadcasting is not enabled in this checkpoint. */
-  broadcastEnabled: false;
+  /** Whether this deployment executes withdrawals (WITHDRAWALS_ENABLED). */
+  broadcastEnabled: boolean;
+}
+
+export interface WithdrawalRequest {
+  destinationAddress: string;
+  amountSol: string;
+}
+
+export interface WithdrawalPolicyDto {
+  enabled: boolean;
+  /** A demo access code must be sent in the X-Withdrawal-Access-Code header. */
+  accessCodeRequired: boolean;
+  maxLamports: string;
+  estimatedFeeLamports: string;
+}
+
+export interface AmountDto {
+  lamports: string;
+  sol: string;
+}
+
+/** Wallet overview: internal ledger balance first, on-chain balance for diagnostics. */
+export interface WalletOverviewDto {
+  network: SolanaNetwork;
+  address: string;
+  /** Internal ledger balance: SUM(ledger_entries). Source of truth for the app. */
+  available: AmountDto;
+  /** Live on-chain balance of the custodial wallet. Null if the RPC is unreachable. */
+  onChain: AmountDto | null;
+  pending: {
+    /** Deposits detected but not yet finalized (not yet credited). */
+    incomingLamports: string;
+    /** Withdrawals reserved/in flight (already deducted from available). */
+    outgoingLamports: string;
+  };
+  withdrawals: WithdrawalPolicyDto;
+  sync: { status: 'ok' | 'skipped' | 'error'; message?: string; lastSyncedAt: string | null };
+}
+
+export type DepositStatus = 'detected' | 'confirming' | 'confirmed' | 'failed';
+export type WithdrawalStatus =
+  | 'pending'
+  | 'processing'
+  | 'broadcast'
+  | 'confirming'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface WithdrawalDto {
+  id: string;
+  destinationAddress: string;
+  amountLamports: string;
+  feeLamports: string | null;
+  status: WithdrawalStatus;
+  signature: string | null;
+  explorerUrl: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/** One user-facing history row, backed by the deposits / withdrawals tables. */
+export interface ActivityItemDto {
+  id: string;
+  kind: 'deposit' | 'withdrawal';
+  /** Signed from the user's perspective: deposits > 0, withdrawals < 0. */
+  amountLamports: string;
+  feeLamports: string | null;
+  status: DepositStatus | WithdrawalStatus;
+  signature: string | null;
+  explorerUrl: string | null;
+  counterparty: string | null;
+  createdAt: string;
+  settledAt: string | null;
+}
+
+export interface ActivityListDto {
+  network: SolanaNetwork;
+  items: ActivityItemDto[];
 }

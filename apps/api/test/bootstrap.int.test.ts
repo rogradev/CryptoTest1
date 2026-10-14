@@ -3,6 +3,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseEnv } from '../src/config/env.js';
 import { createContainer, createHttpApp } from '../src/container.js';
+import { MIGRATIONS } from '../src/db/migrations.generated.js';
 import { MockBlockchainProvider } from './helpers.js';
 
 /**
@@ -51,7 +52,7 @@ describe.skipIf(!adminUrl)('database auto-bootstrap', () => {
     expect(again.body.data.address).toBe(wallet.body.data.address);
 
     const { rows } = await pool.query('SELECT name FROM schema_migrations');
-    expect(rows.map((r) => r.name)).toEqual(['001_initial_schema.sql']);
+    expect(rows.map((r) => r.name).sort()).toEqual(MIGRATIONS.map((m) => m.name));
     const { rows: wallets } = await pool.query('SELECT count(*)::int AS n FROM wallet_accounts');
     expect(wallets[0].n).toBe(1);
   });

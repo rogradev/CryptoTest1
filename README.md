@@ -9,9 +9,10 @@ React (Vite) ──► Express / TypeScript API ──► PostgreSQL
 ```
 
 The app generates a **real Solana Devnet wallet** on the server, stores its secret key
-**encrypted (AES-256-GCM)** in PostgreSQL, and shows the wallet's **live on-chain balance**,
-deposit address and QR code in a responsive dashboard. Nothing in the UI is mocked:
-balances and transactions are read from Solana Devnet on every request.
+**encrypted (AES-256-GCM)** in PostgreSQL, **detects incoming SOL deposits automatically**,
+credits them to an **append-only internal ledger** once finalized, and executes **real
+Devnet withdrawals** signed server-side. Nothing in the UI is mocked: every deposit and
+withdrawal is a real Devnet transaction, verifiable on Solana Explorer.
 
 > ⚠️ **Devnet only.** This is a prototype custody architecture for demonstration and
 > development. It is **not production custody** and must never hold mainnet funds.
@@ -37,22 +38,27 @@ Current implemented checkpoint:
 ✓ real on-chain Devnet balance
 ✓ balance refresh
 
-Next milestone:
+Devnet MVP milestone:
 
-→ automatic deposit detection
-→ internal ledger
-→ deposit confirmation states
-→ complete withdrawal broadcasting
-→ unified transaction history
+✓ automatic deposit detection (persisted, idempotent)
+✓ internal ledger (append-only, integer lamports)
+✓ deposit confirmation states (detected → confirming → confirmed)
+✓ complete withdrawal broadcasting (reserve → sign → broadcast → confirm → settle)
+✓ unified transaction history (stored deposits + withdrawals)
+✓ demo safety gate for withdrawals
+
+Next:
+
+→ integration into the client's PERN backend and authentication
 ```
 
-Also included in this checkpoint:
+End-to-end flow:
 
-- Recent on-chain activity for the wallet (signatures + net SOL change, read live from Devnet).
-- Withdraw screen with **real validation only** (address format, amount, available on-chain
-  balance + fee). Signing/broadcasting is intentionally disabled and labelled as the next
-  milestone; `POST /api/wallet/withdrawals` returns `501 NOT_IMPLEMENTED`.
-- Full database schema for deposits, withdrawals, ledger entries and blockchain transactions.
+```
+Add Funds → deposit detected → confirming → confirmed (ledger credited once)
+Withdraw  → reserved → broadcasting → confirming → completed (ledger debited)
+          ↳ rejected / dropped / expired → failed (reserved funds released)
+```
 
 ---
 
@@ -119,8 +125,10 @@ Key design decisions:
   `createHttpApp()` (`apps/api/src/container.ts`) — nothing else changes. `users.id` is `TEXT` so any identifier format fits.
 - **Blockchain behind an interface.** `BlockchainProvider` (`apps/api/src/blockchain/types.ts`)
   is the only boundary to the chain; `@solana/web3.js` is imported in exactly one file,
-  `SolanaDevnetProvider`. `sendTransaction()`, `getTransaction()` and `detectDeposits()`
-  slot into this interface in the next milestone without touching controllers or the UI.
+  `SolanaDevnetProvider`. Deposit detection (`getRecentSignatures`, `getTransaction`,
+  `getSignatureStatuses`) and withdrawals (`createSignedTransfer`, `sendRawTransaction`,
+  `getBlockHeight`, `getMinimumBalanceForRentExemption`) are all provider methods, so tests
+  run against an in-memory fake chain.
 - **Two runtimes, one app.** `src/server.ts` runs a long-lived server (`npm run dev`,
   `npm start`); `src/app.ts` default-exports the same app for Vercel Functions.
 - **Composition root.** `apps/api/src/container.ts` wires repositories, cipher, provider and
@@ -130,9 +138,9 @@ Key design decisions:
 - **Money is integer lamports.** `BIGINT` in SQL, `bigint` in TypeScript, strings over JSON.
   `packages/shared/src/lamports.ts` converts SOL ↔ lamports with exact string arithmetic;
   conversion to SOL happens only for display.
-- **On-chain balance ≠ ledger balance.** `WalletService.getOnChainBalance(userId)` and the
-  `source: "on-chain"` field make explicit that the shown balance is the live chain balance.
-  The internal ledger balance (sum of `ledger_entries`) arrives with the next milestone.
+- **Ledger balance is the application balance.** The UI's *Available Balance* is
+  `SUM(ledger_entries)`; the live chain balance (`WalletService.getOnChainBalance`,
+  `source: "on-chain"`) is shown separately as a diagnostic.
 
 ### Folder structure
 
@@ -202,10 +210,14 @@ generated file is out of sync.
 | --- | --- | --- |
 | `users` | Local identity (`id TEXT`, `display_name`, `created_at`) | **in use** (demo user) |
 | `wallet_accounts` | One wallet per user per network: `address`, `encrypted_secret`, `network`, `created_at`. `UNIQUE (user_id, network)` | **in use** |
-| `blockchain_transactions` | Normalized on-chain transactions per wallet: `signature`, `direction`, signed `amount_lamports`, `fee_lamports`, `slot`, `block_time`, `status` | schema ready |
-| `deposits` | Deposit lifecycle `detected → confirmed → credited / failed`, unique `signature` | schema ready |
-| `withdrawals` | Withdrawal lifecycle `pending → processing → broadcast → completed / failed / cancelled`, `idempotency_key`, `fee_lamports`, `failure_reason` | schema ready |
-| `ledger_entries` | Append-only signed ledger (`deposit`, `withdrawal`, `withdrawal_fee`, `adjustment`) referencing deposits/withdrawals; balance = `SUM(amount_lamports)` | schema ready |
+| `blockchain_transactions` | Every on-chain transaction seen for a wallet: `signature`, `direction`, signed net `amount_lamports`, `fee_lamports`, `slot`, `block_time`, commitment `status`. `UNIQUE (wallet_account_id, signature)` | **in use** |
+| `deposits` | Incoming SOL: `detected → confirming → confirmed` (credited) or `failed`. `UNIQUE (signature)` | **in use** |
+| `withdrawals` | `pending → processing → broadcast → confirming → completed` or `failed`; `reserved_lamports`, `fee_lamports`, `signature`, `last_valid_block_height`, `failure_reason`. `UNIQUE (user_id, idempotency_key)` | **in use** |
+| `ledger_entries` | Append-only signed ledger (`deposit`, `withdrawal_reserve`, `withdrawal_release`, `withdrawal`, `withdrawal_fee`, `adjustment`). Balance = `SUM(amount_lamports)`. `UNIQUE (reference_type, reference_id, type)`; UPDATE/DELETE rejected by a trigger | **in use** |
+
+Migrations: `001_initial_schema.sql` (foundation) and `002_deposits_ledger_withdrawals.sql`
+(additive: deposit/withdrawal states, sync bookkeeping, reservation ledger types, ledger
+immutability trigger).
 
 All amounts are `BIGINT` lamports with `CHECK` constraints (positive amounts, non-zero ledger
 entries, allowed status values). Foreign keys use `ON DELETE RESTRICT` — financial history is
@@ -229,6 +241,10 @@ invalid variable (values are never echoed).
 | `WALLET_ENCRYPTION_KEY` | — (required) | 32 random bytes, base64 (44 chars) or hex (64 chars) |
 | `DEMO_USER_ID` | `demo-user-001` | Identity injected by `DemoUserMiddleware` |
 | `DB_AUTO_MIGRATE` | `true` | Apply pending migrations and seed the demo user on the first API request |
+| `WITHDRAWALS_ENABLED` | `false` | Execute real withdrawals. Off by default |
+| `WITHDRAWAL_ACCESS_CODE` | — | Demo access code for executing withdrawals (≥ 8 chars). **Required** in production when withdrawals are enabled |
+| `WITHDRAWAL_MAX_SOL` | `1` | Maximum SOL per withdrawal |
+| `DEPOSIT_SYNC_INTERVAL_MS` | `15000` | Background sync interval of the long-running server (`0` disables) |
 
 Generate a key manually:
 
@@ -273,6 +289,80 @@ never returned by the API and never logged.
 
 ---
 
+## Deposits: detection and confirmation
+
+`DepositSyncService` (via the `BlockchainProvider` abstraction):
+
+1. Reads the wallet's recent signatures; fetches details only for signatures not yet in
+   `blockchain_transactions`.
+2. Extracts native SOL transfers (System Program `transfer`/`transferWithSeed`, top-level and
+   inner instructions) **to** the wallet; records the transaction and, for incoming SOL, a
+   `deposits` row (`detected`).
+3. Follows commitment with `getSignatureStatuses`: `confirmed` → `confirming`;
+   `finalized` → `confirmed` **and** the ledger credit, in one database transaction.
+   A transaction that failed on-chain → `failed`, never credited.
+
+Idempotency: unique signatures per wallet, unique deposit signatures and the unique ledger
+reference make re-runs, restarts and concurrent syncs harmless.
+
+**When does it run?** The long-running server (`npm run dev` / `npm start`) syncs every
+`DEPOSIT_SYNC_INTERVAL_MS`. On Vercel (serverless, no background process) every UI poll of
+`GET /api/wallet/overview` triggers a sync, throttled to once per 4 s across all instances
+(`wallet_accounts.last_synced_at`); the UI polls every 3 s while something is pending or a
+modal is open, every 15 s otherwise. `POST /api/wallet/sync` forces one.
+
+## Internal ledger
+
+`ledger_entries` is the source of truth for the application balance
+(`LedgerService.getAvailableBalance(userId)` = `SUM(amount_lamports)`, integer lamports,
+`BIGINT` in SQL and `bigint` in TypeScript). Entries are immutable (trigger). Postings:
+
+| Event | Entries |
+| --- | --- |
+| Deposit finalized (`creditDeposit`) | `deposit +amount` |
+| Withdrawal requested (`reserveWithdrawal`) | `withdrawal_reserve −(amount + fee)` |
+| Withdrawal finalized (`completeWithdrawal`) | `withdrawal_release +(amount + fee)`, `withdrawal −amount`, `withdrawal_fee −actual fee` |
+| Withdrawal failed (`releaseFailedWithdrawal`) | `withdrawal_release +(amount + fee)` (+ `withdrawal_fee` if it landed and paid a fee) |
+
+The on-chain wallet balance is still shown (as a diagnostic) next to the ledger balance.
+
+## Withdrawals
+
+```
+validate address & amount → on-chain feasibility (fee, rent-exemption)
+→ PostgreSQL transaction: lock user row, check ledger balance, insert withdrawal, reserve
+→ sign (key decrypted only inside WalletKeyStore, zeroed after) → store signature
+→ broadcast → reconcile: confirming → completed (final debit) | failed (hold released)
+```
+
+- **Concurrency:** `SELECT … FOR UPDATE` on the user row serializes withdrawals; two requests
+  can never spend the same balance.
+- **Duplicate submission:** required `Idempotency-Key` header, `UNIQUE (user_id, idempotency_key)`;
+  a repeat returns the original withdrawal and never sends again.
+- **Crash safety:** the signature is stored *before* broadcasting. Reconciliation resolves any
+  in-flight withdrawal from chain state; holds are released only when the transaction failed,
+  the network rejected it, or its blockhash expired without it landing.
+- **Checks:** valid Solana address (not the wallet itself), positive amount with ≤ 9 decimals,
+  ≤ `WITHDRAWAL_MAX_SOL`, ledger balance ≥ amount + fee, on-chain balance ≥ amount + fee,
+  no remainder below the rent-exempt minimum, ≥ rent-exempt minimum to brand-new accounts.
+
+### Demo safety: enabling / disabling withdrawals
+
+Withdrawals are **disabled by default**. To enable them on a deployment set:
+
+```
+WITHDRAWALS_ENABLED=true
+WITHDRAWAL_ACCESS_CODE=<at least 8 characters, share only with demo operators>
+WITHDRAWAL_MAX_SOL=1
+```
+
+The UI then asks for the access code (kept in the browser tab's session storage) and sends it
+as `X-Withdrawal-Access-Code`. Wrong codes are rejected (401); 5 failures per client within
+15 minutes lock that client out (429). In production the API refuses to start with
+withdrawals enabled but no access code. To switch off, set `WITHDRAWALS_ENABLED=false` (or
+remove it) and redeploy. This gate is deliberately not authentication: when integrating,
+replace it with the client's authorization rules (`middleware/withdrawalAccess.ts`).
+
 ## Funding the wallet & verifying balance changes
 
 1. Open the app → **Add Funds**. Copy the address (or scan the QR).
@@ -284,9 +374,10 @@ never returned by the API and never logged.
    solana transfer <ADDRESS> 0.5 --url devnet --allow-unfunded-recipient
    ```
    The faucet is rate-limited per IP/account; if it refuses, wait or use another devnet source.
-3. Click **Refresh Balance**. The API reads the balance from Devnet (`confirmed` commitment)
-   and the UI shows the new amount with a `+X SOL` indicator; the deposit appears in
-   **Recent Transactions** with a link to Solana Explorer.
+3. Keep **Add Funds** open (or click **Refresh Balance**): the deposit appears as
+   *Detected → Confirming → Confirmed*; when finalized (~15 s on Devnet) the available
+   balance increases with a `+X SOL credited` indicator and the deposit is listed in
+   **Recent Transactions** with a Solana Explorer link.
 4. Cross-check independently:
    ```bash
    curl -s localhost:3001/api/wallet/balance
@@ -307,11 +398,15 @@ traces and internals are never returned.
 | `GET /api/health` | DB + Devnet status, slot, node version (503 when degraded) |
 | `GET /api/me` | Current user (`authMode: "demo"` in this checkpoint) |
 | `GET /api/wallet` | Wallet (created on first call): id, network, address, explorer URL |
-| `GET /api/wallet/balance` | **Live on-chain** balance: `balanceLamports` (string), `balanceSol` |
+| `GET /api/wallet/overview` | **Ledger** available balance, on-chain balance (diagnostic), pending in/out, withdrawal policy, sync status. Triggers a throttled sync |
+| `POST /api/wallet/sync` | Same as overview, forcing a sync now |
+| `GET /api/wallet/activity?limit=1..100` | User-facing history from `deposits` + `withdrawals` (kind, signed amount, status, signature, Explorer link) |
+| `GET /api/wallet/balance` | Raw **on-chain** balance (diagnostic) |
 | `GET /api/wallet/deposit-address` | Address, `solana:` payment URI, explorer URL, devnet warning |
-| `GET /api/wallet/transactions?limit=1..25` | Recent on-chain transactions with direction & net amount |
-| `POST /api/wallet/withdrawals/validate` | Validates `{ destinationAddress, amountSol }` — no funds move |
-| `POST /api/wallet/withdrawals` | `501 NOT_IMPLEMENTED` — placeholder for the next milestone |
+| `GET /api/wallet/transactions?limit=1..25` | Raw on-chain transaction list (diagnostic) |
+| `POST /api/wallet/withdrawals/validate` | Dry run of a withdrawal against the ledger balance — nothing is reserved |
+| `POST /api/wallet/withdrawals` | Executes a real Devnet withdrawal (`202`). Headers: `Idempotency-Key` (required), `X-Withdrawal-Access-Code` (when configured). `403` disabled, `401` bad code, `409` insufficient funds, `422` invalid input |
+| `GET /api/wallet/withdrawals/:id` | Withdrawal status |
 
 Example:
 
@@ -335,23 +430,21 @@ GET /api/wallet/balance
 ## Tests
 
 ```bash
-npm test             # 58 tests: shared (lamports, address) + API (env, cipher, services, HTTP)
+npm test         # unit + HTTP tests (no database, no network)
+npm run test:db  # everything, including the real-PostgreSQL suites (needs docker compose up -d)
 npm run typecheck
 npm run lint
 ```
 
-Unit and HTTP tests mock Solana (`MockBlockchainProvider`) and storage, so they never depend
-on Devnet. Coverage includes SOL ↔ lamports conversion, address validation, environment
-validation (including the mainnet guard), AES-GCM encryption/tamper detection, wallet
-creation/persistence/idempotency/concurrency, withdrawal validation, and that no secret
-material appears in any API response.
-
-An extra integration test runs against a real, migrated PostgreSQL when `TEST_DATABASE_URL`
-is set:
-
-```bash
-TEST_DATABASE_URL=postgresql://wallet:wallet@localhost:5432/wallet_prototype npm test -w @wallet/api
-```
+Solana is always mocked in tests (`MockBlockchainProvider`, an in-memory fake chain), so no
+test depends on Devnet. The PostgreSQL suites (`*.int.test.ts`) create and drop their own
+scratch databases on the server given by `TEST_ADMIN_DATABASE_URL` (default for `test:db`:
+the docker-compose server) and cover: duplicate deposit detection, crediting exactly once,
+re-importing seen transactions after a restart, status transitions, failed deposits, ledger
+balance and immutability, insufficient funds, concurrent withdrawals, duplicate submissions,
+reservation, completion, rejection/expiry/on-chain-failure release, invalid addresses and
+amounts, rent-exemption and network-fee checks. HTTP tests cover the demo safety gate
+(disabled, missing/wrong code, lockout), idempotency headers and validation.
 
 ---
 
@@ -378,14 +471,17 @@ Before the first deploy:
 2. Set project environment variables: `DATABASE_URL`, `WALLET_ENCRYPTION_KEY` (a new key,
    never the local one), and optionally `SOLANA_RPC_URL` (a dedicated Devnet RPC is
    recommended), `DEMO_USER_ID`. `CORS_ORIGIN` is not needed for the same-origin setup.
+   For real withdrawals also set `WITHDRAWALS_ENABLED=true` and `WITHDRAWAL_ACCESS_CODE`
+   (optionally `WITHDRAWAL_MAX_SOL`). Environment changes apply to new deployments only.
 3. Deploy (`vercel deploy` or connect the Git repository).
 
 Test the deployment topology locally with `vercel dev` (or `vercel dev -L` without
 linking). It runs both services behind the same rewrites as production and reads `.env`.
 
-> The demo user middleware means **anyone who can open the deployment controls the demo
-> wallet** (validation only — nothing can be sent in this checkpoint). Keep the deployment
-> behind Vercel Deployment Protection until real authentication is integrated.
+> The demo user middleware means **anyone who can open the deployment sees the demo wallet**.
+> Executing withdrawals additionally requires `WITHDRAWALS_ENABLED=true` and the
+> `WITHDRAWAL_ACCESS_CODE` (see *Demo safety*). Keep the deployment behind Vercel Deployment
+> Protection until real authentication is integrated.
 
 ---
 
@@ -405,9 +501,14 @@ Implemented even though this is Devnet:
   encryption with per-wallet data keys, key rotation and access auditing.
 - Hot wallet keys are decryptable by the API process. Production custody needs signing
   isolation (separate signer service/HSM/MPC), withdrawal limits, approvals and monitoring.
-- No real authentication: `DemoUserMiddleware` trusts every request as `demo-user-001`. Do not
-  expose this prototype publicly.
-- No rate limiting on the API; the public Devnet RPC is itself rate limited.
+- No real authentication: `DemoUserMiddleware` trusts every request as `demo-user-001`.
+  Anyone with the URL can view the demo wallet; executing withdrawals additionally requires
+  the demo access code. Keep Vercel Deployment Protection on for client demos.
+- The access-code lockout counters live in memory per server instance.
+- No general API rate limiting; the public Devnet RPC is itself rate limited (a dedicated
+  Devnet RPC is recommended for demos).
+- Deposit detection reads the latest 25 signatures per sync; a burst of more than 25
+  transactions between two syncs would need pagination (fine for the demo).
 - `package.json` `overrides` pins `uuid` to `^11.1.1` for `@solana/web3.js`'s dependencies.
   `rpc-websockets` otherwise pulls ESM-only `uuid@14` and `require()`s it, which crashes on
   runtimes without `require(esm)` (seen on Vercel as `ERR_REQUIRE_ESM`); 11.1.1 ships a
@@ -420,13 +521,7 @@ Implemented even though this is Devnet:
 
 ## Next milestone
 
-- **Automatic deposit detection** — `BlockchainProvider.detectDeposits()` + a poller/websocket
-  worker writing `blockchain_transactions` and `deposits`.
-- **Internal ledger** — append-only `ledger_entries`; internal balance next to on-chain balance.
-- **Deposit confirmation states** — `detected → confirmed → credited` driven by commitment level.
-- **Complete withdrawal broadcasting** — `WithdrawalService.requestWithdrawal()` with idempotency,
-  ledger debit, signing via `SecretCipher`, `BlockchainProvider.sendTransaction()` and status
-  tracking (the UI and `/withdrawals` endpoint are already in place).
-- **Unified transaction history** — served from the database (deposits + withdrawals) instead
-  of raw chain reads.
-- **Client integration** — replace `DemoUserMiddleware` with the client's JWT/session middleware.
+- **Client integration** — replace `DemoUserMiddleware` (and the demo withdrawal gate) with the
+  client's JWT/session middleware and authorization; point `users` at the client's user table.
+- **Production custody** (out of scope here) — KMS/HSM key management, signer isolation,
+  withdrawal approvals/limits, monitoring, a dedicated RPC and websocket-based deposit detection.

@@ -23,6 +23,7 @@
     "start": "npm run start -w @wallet/api",
     "pretest": "npm run build:shared",
     "test": "npm run test --workspaces --if-present",
+    "test:db": "node scripts/test-db.mjs",
     "pretypecheck": "npm run build:shared",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint ."

@@ -25,12 +25,40 @@ async function main() {
 
   const app = createHttpApp(env, container);
 
+  // Long-running server: periodic deposit/withdrawal sync for all wallets.
+  // (Serverless deployments sync on request instead — see AccountService.getOverview.)
+  let syncTimer: NodeJS.Timeout | undefined;
+  if (env.DEPOSIT_SYNC_INTERVAL_MS > 0) {
+    let running = false;
+    syncTimer = setInterval(() => {
+      if (running) return;
+      running = true;
+      container
+        .ensureDatabaseReady()
+        .then(() => container.depositSync.syncAllWallets(env.DEPOSIT_SYNC_INTERVAL_MS / 2))
+        .catch((error: unknown) =>
+          logger.warn('Background sync failed', { error: error instanceof Error ? error.message : String(error) }),
+        )
+        .finally(() => {
+          running = false;
+        });
+    }, env.DEPOSIT_SYNC_INTERVAL_MS);
+    syncTimer.unref();
+  }
+
   const server = app.listen(env.PORT, () => {
-    logger.info('Wallet API listening', { port: env.PORT, network: 'solana-devnet', authMode: 'demo' });
+    logger.info('Wallet API listening', {
+      port: env.PORT,
+      network: 'solana-devnet',
+      authMode: 'demo',
+      withdrawals: env.WITHDRAWALS_ENABLED ? (env.WITHDRAWAL_ACCESS_CODE ? 'enabled (access code)' : 'enabled (open)') : 'disabled',
+      depositSyncIntervalMs: env.DEPOSIT_SYNC_INTERVAL_MS,
+    });
   });
 
   const shutdown = () => {
     logger.info('Shutting down');
+    clearInterval(syncTimer);
     server.close(() => void pool.end().then(() => process.exit(0)));
   };
   process.on('SIGINT', shutdown);
